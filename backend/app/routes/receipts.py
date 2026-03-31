@@ -30,7 +30,7 @@ router = APIRouter(prefix="/receipts", tags=["receipts"])
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "heic", "heif"}
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "heic", "heif", "pdf"}
 
 
 def _parse_uuid(value: str, label: str = "id") -> uuid.UUID:
@@ -88,7 +88,7 @@ async def upload_receipt(
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    # Convert HEIC/HEIF to JPEG so Claude Vision can read it
+    # Convert HEIC/HEIF to JPEG so Vision AI can read it
     if ext in {"heic", "heif"}:
         try:
             img = Image.open(io.BytesIO(contents))
@@ -98,6 +98,24 @@ async def upload_receipt(
             ext = "jpg"
         except Exception:
             raise HTTPException(status_code=400, detail="Could not convert HEIC image — try exporting as JPEG")
+
+    # Convert PDF first page to JPEG so Vision AI can read it
+    if ext == "pdf":
+        try:
+            import fitz  # pymupdf
+            pdf = fitz.open(stream=contents, filetype="pdf")
+            if pdf.page_count == 0:
+                raise HTTPException(status_code=400, detail="PDF has no pages")
+            page = pdf[0]
+            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom → ~144 dpi, sharp enough for OCR
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            buf = io.BytesIO(pix.tobytes("jpeg", jpg_quality=92))
+            contents = buf.getvalue()
+            ext = "jpg"
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not read PDF — {e}")
 
     filename = f"{uuid.uuid4()}.{ext}"
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -205,6 +223,7 @@ def scan_receipt(
                 name=item["name"],
                 quantity=Decimal(str(item.get("quantity", 1))),
                 unit_price=Decimal(str(item["unit_price"])),
+                discount_amount=Decimal(str(item.get("discount_amount", 0))),
                 total_price=Decimal(str(item["total_price"])),
                 display_order=i,
                 is_tax_line=item.get("is_tax_line", False),

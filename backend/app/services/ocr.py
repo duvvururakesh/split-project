@@ -5,7 +5,7 @@ from PIL import Image
 
 from app.config import settings
 
-PROMPT = """You are a receipt parser. Extract all line items and distribute the tax directly onto each taxable item.
+PROMPT = """You are a receipt parser. Extract all line items, distribute tax onto taxable items, and capture any discounts.
 
 Return ONLY valid JSON with no markdown fences, no explanation — just the raw JSON object.
 
@@ -15,11 +15,13 @@ Use exactly this shape:
   "total": number,
   "subtotal": number,
   "tax_total": number,
+  "discount_total": number,
   "items": [
     {
       "name": "string",
       "quantity": number,
       "unit_price": number,
+      "discount_amount": number,
       "total_price": number,
       "is_taxable": boolean,
       "tax_rate": number,
@@ -29,20 +31,34 @@ Use exactly this shape:
 }
 
 Rules:
-- "total" is the final amount on the receipt (including tax and tip)
-- "subtotal" is the pre-tax sum of all regular items
+
+TAX:
+- "total" is the final amount on the receipt (including tax, tip, minus discounts)
+- "subtotal" is the pre-tax, pre-discount sum of all regular items
 - "tax_total" is the total tax shown on the receipt (0 if none)
 - Do NOT include a separate tax line item — distribute tax onto the items instead
 - For each item, set "is_taxable": true if it is subject to sales tax
   - Look for a "T" marker or asterisk next to the price on the receipt
-  - If no markers, use context: groceries/food may be exempt in some states; prepared food, alcohol, household goods are typically taxable
+  - If no markers, use context: groceries/food may be exempt; prepared food, alcohol, household goods are typically taxable
   - When in doubt, mark all non-tip items as taxable
 - Set "tax_rate" to the effective percentage for taxable items:
   - tax_rate = (tax_total / taxable_subtotal) * 100
-  - Where taxable_subtotal = sum of total_price for all is_taxable items
+  - Where taxable_subtotal = sum of unit_price * quantity for all is_taxable items
   - Non-taxable items get tax_rate: 0
-- "unit_price" and "total_price" are the PRE-TAX amounts
-- Include tip as a separate item with is_tip_line: true, is_taxable: false, tax_rate: 0
+
+DISCOUNTS:
+- "discount_total" is the total discount shown on the receipt (0 if none)
+- For each item, set "discount_amount" to the flat dollar discount applied to that item
+  - Look for lines like "INSTANT SAVINGS", "MEMBER SAVINGS", "COUPON", "PROMO", "YOU SAVED", price reductions shown with a minus sign, or a lower price next to a struck-through original price
+  - If a discount line clearly applies to a specific item (e.g. appears directly below it), attach it to that item
+  - If a discount is a general/store-wide discount (not tied to a specific item), distribute it proportionally across all non-tip items by ratio of their unit_price
+  - "discount_amount" is always a positive number representing the dollar amount off (e.g. 1.50 means $1.50 off)
+  - Items with no discount get discount_amount: 0
+
+PRICES:
+- "unit_price" is the ORIGINAL pre-discount, pre-tax price per unit
+- "total_price" = (unit_price * quantity) - discount_amount  (pre-tax)
+- Include tip as a separate item with is_tip_line: true, is_taxable: false, tax_rate: 0, discount_amount: 0
 - quantity defaults to 1 if not shown
 - All numbers must be plain numbers (no $ signs)
 - If a value is unclear, make your best estimate

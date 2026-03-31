@@ -17,4 +17,5 @@ anthropic==0.34.2
 google-generativeai==0.8.3
 pillow==11.2.1
 pillow-heif==0.22.0
+pymupdf==1.24.10
 authlib==1.3.2

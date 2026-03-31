@@ -816,7 +816,7 @@ export default function BillSplitPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,.heic,.heif"
+              accept="image/*,.heic,.heif,.pdf,application/pdf"
               multiple
               className="hidden"
               onChange={e => {
