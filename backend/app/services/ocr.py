@@ -1,11 +1,11 @@
 import json
 import re
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 
 from app.config import settings
 
-PROMPT = """You are a receipt parser. Extract all line items, distribute tax onto taxable items, and capture any discounts.
+PROMPT = """You are a receipt OCR parser. Your job is to read EXACTLY what is printed on the receipt — do not guess, invent, or fill in items that are not clearly visible.
 
 Return ONLY valid JSON with no markdown fences, no explanation — just the raw JSON object.
 
@@ -30,39 +30,45 @@ Use exactly this shape:
   ]
 }
 
-Rules:
+STRICT RULES — follow exactly:
 
-TAX:
-- "total" is the final amount on the receipt (including tax, tip, minus discounts)
-- "subtotal" is the pre-tax, pre-discount sum of all regular items
-- "tax_total" is the total tax shown on the receipt (0 if none)
-- Do NOT include a separate tax line item — distribute tax onto the items instead
-- For each item, set "is_taxable": true if it is subject to sales tax
-  - Look for a "T" marker or asterisk next to the price on the receipt
-  - If no markers, use context: groceries/food may be exempt; prepared food, alcohol, household goods are typically taxable
-  - When in doubt, mark all non-tip items as taxable
-- Set "tax_rate" to the effective percentage for taxable items:
-  - tax_rate = (tax_total / taxable_subtotal) * 100
-  - Where taxable_subtotal = sum of unit_price * quantity for all is_taxable items
-  - Non-taxable items get tax_rate: 0
+1. ITEMS: Only include items that are explicitly printed on the receipt as purchased products. Do NOT include tax lines, subtotal lines, total lines, or store header info as items.
 
-DISCOUNTS:
-- "discount_total" is the total discount shown on the receipt (0 if none)
-- For each item, set "discount_amount" to the flat dollar discount applied to that item
-  - Look for lines like "INSTANT SAVINGS", "MEMBER SAVINGS", "COUPON", "PROMO", "YOU SAVED", price reductions shown with a minus sign, or a lower price next to a struck-through original price
-  - If a discount line clearly applies to a specific item (e.g. appears directly below it), attach it to that item
-  - If a discount is a general/store-wide discount (not tied to a specific item), distribute it proportionally across all non-tip items by ratio of their unit_price
-  - "discount_amount" is always a positive number representing the dollar amount off (e.g. 1.50 means $1.50 off)
-  - Items with no discount get discount_amount: 0
+2. PRICES: Read the price exactly as printed. "unit_price" is the price per single unit before any discount or tax. "total_price" = (unit_price × quantity) - discount_amount. All numbers are plain decimals, no $ signs.
 
-PRICES:
-- "unit_price" is the ORIGINAL pre-discount, pre-tax price per unit
-- "total_price" = (unit_price * quantity) - discount_amount  (pre-tax)
-- Include tip as a separate item with is_tip_line: true, is_taxable: false, tax_rate: 0, discount_amount: 0
-- quantity defaults to 1 if not shown
-- All numbers must be plain numbers (no $ signs)
-- If a value is unclear, make your best estimate
+3. QUANTITY: Default to 1 unless the receipt clearly shows a quantity (e.g. "2 @" or "3 x").
+
+4. TAX: Do NOT add a separate tax line item. Instead distribute tax onto each item:
+   - If an item has a "T" or "*" marker it is taxable
+   - tax_rate = (tax_total / sum_of_taxable_item_prices) × 100
+   - Non-taxable items get is_taxable: false, tax_rate: 0
+
+5. DISCOUNTS: If a discount line appears directly below an item (e.g. "INSTANT SAVINGS -$1.50"), set that item's discount_amount to 1.50. If it's a general discount not tied to any item, distribute proportionally. Items with no discount get discount_amount: 0.
+
+6. TIP: If a tip is shown, include it as one item with is_tip_line: true, is_taxable: false, tax_rate: 0, discount_amount: 0.
+
+7. TOTALS: "total" is the final charged amount. "subtotal" is pre-tax pre-discount sum. "tax_total" and "discount_total" are as printed (0 if not shown).
+
+8. ACCURACY: If any value is unclear or unreadable, use 0 rather than guessing.
 """
+
+
+def _preprocess_image(image_path: str) -> Image.Image:
+    """Sharpen and enhance contrast to improve OCR accuracy."""
+    img = Image.open(image_path).convert("RGB")
+
+    # Upscale small images
+    w, h = img.size
+    if max(w, h) < 1500:
+        scale = 1500 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # Sharpen + boost contrast
+    img = img.filter(ImageFilter.SHARPEN)
+    img = ImageEnhance.Contrast(img).enhance(1.4)
+    img = ImageEnhance.Sharpness(img).enhance(2.0)
+
+    return img
 
 
 def parse_receipt(image_path: str) -> dict:
@@ -70,12 +76,13 @@ def parse_receipt(image_path: str) -> dict:
 
     genai.configure(api_key=settings.GEMINI_API_KEY)
 
-    img = Image.open(image_path).convert("RGB")
+    img = _preprocess_image(image_path)
 
     model = genai.GenerativeModel("gemini-2.5-flash")
     response = model.generate_content([img, PROMPT])
 
     raw = response.text.strip()
+    print(f"[OCR RAW]\n{raw}\n")  # log so we can debug
 
     # Strip markdown fences if model added them
     raw = re.sub(r"^```[a-z]*\n?", "", raw)
@@ -83,7 +90,7 @@ def parse_receipt(image_path: str) -> dict:
 
     data = json.loads(raw)
 
-    # Safety: if the AI still outputs a tax line, convert it instead of failing
+    # Safety: if the AI still outputs a tax line item, strip it and redistribute
     cleaned_items = []
     tax_line_total = 0.0
     for item in data.get("items", []):
@@ -92,7 +99,6 @@ def parse_receipt(image_path: str) -> dict:
         else:
             cleaned_items.append(item)
 
-    # If tax lines were found but tax wasn't distributed, do it now
     if tax_line_total > 0 and cleaned_items:
         taxable_subtotal = sum(
             float(i.get("total_price", 0))

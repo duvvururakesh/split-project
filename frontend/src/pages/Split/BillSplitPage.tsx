@@ -262,7 +262,10 @@ export default function BillSplitPage() {
     setReceipts(prev => prev.map(r => r.id === rId ? { ...r, scanning: true, error: '' } : r))
     try {
       const uploaded = await uploadReceipt(file)
-      const scanned = await scanReceipt(uploaded.id)
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Scan timed out — try again or enter manually')), 90_000)
+      )
+      const scanned = await Promise.race([scanReceipt(uploaded.id), timeout])
       setReceipts(prev => prev.map(r => {
         if (r.id !== rId) return r
         return {
@@ -1172,60 +1175,104 @@ export default function BillSplitPage() {
         {/* ── STEP 4: SUMMARY ──────────────────────────────────────────────── */}
         {step === 'summary' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-2xl font-semibold text-[#1d1d1f] tracking-tight">Summary</h2>
-              <button onClick={() => setStep('review')} className="text-sm text-[#0071e3] hover:text-[#0077ed]">← Edit</button>
-            </div>
 
-            {/* Grand total */}
-            <div className="bg-white rounded-2xl border border-[#e8e8ed] px-5 py-4 flex items-center justify-between">
-              <p className="text-sm font-medium text-[#6e6e73]">Grand total</p>
-              <p className="text-2xl font-bold text-[#1d1d1f]">${grandTotal.toFixed(2)}</p>
-            </div>
+            {/* ← Edit */}
+            <button
+              onClick={() => setStep('review')}
+              className="flex items-center gap-1 text-sm text-[#0071e3] hover:text-[#0077ed] transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+              Edit
+            </button>
 
-            {/* Per-person */}
-            <div className="bg-white rounded-2xl border border-[#e8e8ed] divide-y divide-[#f2f2f7]">
-              {summary.map(({ person, share, paid, net }) => (
-                <div key={person.id} className="px-5 py-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full text-white flex items-center justify-center text-sm font-semibold" style={{ background: avatarColor(person.name).bg, color: avatarColor(person.name).text }}>
-                      {person.name[0].toUpperCase()}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-[#1d1d1f]">{person.name}</p>
-                      {paid > 0 && <p className="text-xs text-[#86868b]">paid ${paid.toFixed(2)}</p>}
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-semibold text-[#1d1d1f]">share ${share.toFixed(2)}</p>
-                    {net > 0.01 && <p className="text-xs font-semibold text-[#ff9500]">owes ${net.toFixed(2)}</p>}
-                    {net < -0.01 && <p className="text-xs font-semibold text-[#34c759]">gets back ${Math.abs(net).toFixed(2)}</p>}
-                    {Math.abs(net) <= 0.01 && <p className="text-xs text-[#aeaeb2]">settled</p>}
-                  </div>
+            {/* Expense header card */}
+            <div className="bg-white rounded-2xl border border-[#e8e8ed] p-5">
+              <div className="flex items-start gap-4">
+                <div className="w-14 h-14 rounded-2xl bg-[#fff0eb] flex items-center justify-center shrink-0">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#e8784a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="18" rx="2"/>
+                    <line x1="8" y1="9" x2="16" y2="9"/>
+                    <line x1="8" y1="13" x2="16" y2="13"/>
+                    <line x1="8" y1="17" x2="12" y2="17"/>
+                  </svg>
                 </div>
-              ))}
-            </div>
-
-            {/* Settlements */}
-            {settlements.length > 0 && (
-              <div className="bg-white rounded-2xl border border-[#e8e8ed] p-5">
-                <p className="text-xs font-semibold text-[#86868b] uppercase tracking-widest mb-4">Who pays who</p>
-                <div className="space-y-3">
-                  {settlements.map((s, i) => (
-                    <div key={i} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="font-medium text-[#1d1d1f]">{s.from}</span>
-                        <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
-                          <path d="M1 5h12M9 1l4 4-4 4" stroke="#aeaeb2" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                        <span className="font-medium text-[#1d1d1f]">{s.to}</span>
-                      </div>
-                      <span className="text-sm font-bold text-[#0071e3]">${s.amount.toFixed(2)}</span>
-                    </div>
-                  ))}
+                <div>
+                  <p className="text-base font-semibold text-[#1d1d1f] leading-snug">
+                    {receipts.length === 1
+                      ? receipts[0].merchantName || 'Receipt'
+                      : receipts.map(r => r.merchantName || 'Receipt').join(', ')}
+                  </p>
+                  <p className="text-4xl font-bold text-[#1d1d1f] tracking-tight mt-0.5">${grandTotal.toFixed(2)}</p>
+                  <p className="text-xs text-[#86868b] mt-2">
+                    Added by you on {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                  </p>
                 </div>
               </div>
-            )}
+            </div>
+
+            {/* Payer + people hierarchy */}
+            <div className="bg-white rounded-2xl border border-[#e8e8ed] p-5">
+              {(() => {
+                const payers = summary.filter(s => s.paid > 0)
+                const singlePayer = payers.length === 1
+
+                return (
+                  <div>
+                    {/* Paid by */}
+                    <p className="text-xs font-semibold text-[#86868b] uppercase tracking-widest mb-3">Paid by</p>
+                    <div className="space-y-3 mb-4">
+                      {payers.map(({ person, paid }) => (
+                        <div key={person.id} className="flex items-center gap-3">
+                          <div
+                            className="w-10 h-10 rounded-full flex items-center justify-center text-base font-bold shrink-0"
+                            style={{ background: avatarColor(person.name).bg, color: avatarColor(person.name).text }}
+                          >
+                            {person.name[0].toUpperCase()}
+                          </div>
+                          <p className="text-base font-semibold text-[#1d1d1f]">
+                            {person.name} paid ${paid.toFixed(2)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="border-t border-[#f2f2f7] mb-4" />
+                    <p className="text-xs font-semibold text-[#86868b] uppercase tracking-widest mb-3">Each person's share</p>
+
+                    {/* Per-person breakdown */}
+                    <div className="space-y-4">
+                      {summary.map(({ person, share, net }) => (
+                        <div key={person.id} className="flex items-center gap-4">
+                          <div className="w-14 flex items-center justify-center shrink-0">
+                            <div
+                              className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold z-10"
+                              style={{ background: avatarColor(person.name).bg, color: avatarColor(person.name).text }}
+                            >
+                              {person.name[0].toUpperCase()}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-sm text-[#1d1d1f]">
+                              {net > 0.01 ? (
+                                <><span className="font-semibold">{person.name}</span> owes <span className="font-semibold text-[#ff9500]">${net.toFixed(2)}</span></>
+                              ) : net < -0.01 ? (
+                                <><span className="font-semibold">{person.name}</span> gets back <span className="font-semibold text-[#34c759]">${Math.abs(net).toFixed(2)}</span></>
+                              ) : (
+                                <><span className="font-semibold">{person.name}</span> <span className="text-[#aeaeb2]">· settled</span></>
+                              )}
+                            </p>
+                            <p className="text-xs text-[#aeaeb2]">share ${share.toFixed(2)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+
 
             {/* Receipt breakdown */}
             <div className="bg-white rounded-2xl border border-[#e8e8ed] p-5">
@@ -1244,19 +1291,16 @@ export default function BillSplitPage() {
                 const regItems = r.items.filter(x => !x.isTaxLine && !x.isTipLine)
                 const tipAmt = r.items.filter(x => x.isTipLine).reduce((s, x) => s + itemTotal(x), 0)
                 const taxAmt = embeddedTaxTotal(r) + effectiveTaxTotal(r)
+                const payer = people.find(p => p.id === r.paidById)
                 return (
-                  <div key={r.id} className="py-2.5 border-b border-[#f2f2f7] last:border-0">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <span className="text-sm font-medium text-[#1d1d1f] truncate">{r.merchantName || `Receipt ${i + 1}`}</span>
-                        <span className="text-xs text-[#aeaeb2] shrink-0">{regItems.length} item{regItems.length !== 1 ? 's' : ''}</span>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0 ml-3">
+                  <div key={r.id} className="py-3 border-b border-[#f2f2f7] last:border-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium text-[#1d1d1f] truncate flex-1 mr-3">{r.merchantName || `Receipt ${i + 1}`}</span>
+                      <div className="flex items-center gap-3 shrink-0">
                         <span className="text-sm font-semibold text-[#1d1d1f]">${receiptEffectiveTotal(r).toFixed(2)}</span>
                         <button
                           onClick={() => {
                             setStep('review')
-                            // Brief delay so review step renders before scrolling
                             setTimeout(() => {
                               document.getElementById(`receipt-${r.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                             }, 80)
@@ -1267,33 +1311,25 @@ export default function BillSplitPage() {
                         </button>
                       </div>
                     </div>
-                    {/* Subtotals row */}
-                    <div className="flex gap-3 mt-0.5 text-xs text-[#86868b]">
-                      <span>Subtotal ${(receiptEffectiveTotal(r) - taxAmt - tipAmt).toFixed(2)}</span>
-                      {taxAmt > 0.01 && <span>Tax ${taxAmt.toFixed(2)}</span>}
-                      {tipAmt > 0.01 && <span>Tip ${tipAmt.toFixed(2)}</span>}
+                    <div className="flex gap-3 text-xs text-[#86868b]">
+                      <span>{regItems.length} item{regItems.length !== 1 ? 's' : ''}</span>
+                      {taxAmt > 0.01 && <span>· Tax ${taxAmt.toFixed(2)}</span>}
+                      {tipAmt > 0.01 && <span>· Tip ${tipAmt.toFixed(2)}</span>}
+                      {payer && <span>· Paid by {payer.name}</span>}
                     </div>
-                    {/* Paid by */}
-                    {(() => {
-                      const payer = people.find(p => p.id === r.paidById)
-                      return payer ? <p className="text-xs text-[#aeaeb2] mt-0.5">Paid by {payer.name}</p> : null
-                    })()}
                   </div>
                 )
               })}
             </div>
 
-            {/* Save split */}
+            {/* Save / Update */}
             {saveSplit.isSuccess && !saveSplit.isPending ? (
-              <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-2xl px-5 py-4 flex items-center justify-between">
+              <div className="bg-[#edfaf1] border border-[#34c759]/30 rounded-2xl px-5 py-4 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-[#15803d]">✓ Split saved</p>
-                  <p className="text-xs text-[#86868b] mt-0.5">You can reload it anytime from the home screen</p>
+                  <p className="text-sm font-semibold text-[#1a7a3a]">✓ Split saved</p>
+                  <p className="text-xs text-[#86868b] mt-0.5">Reload it anytime from Activity</p>
                 </div>
-                <button
-                  onClick={() => saveSplit.mutate()}
-                  className="text-xs text-[#0071e3] font-medium hover:underline"
-                >
+                <button onClick={() => saveSplit.mutate()} className="text-xs text-[#0071e3] font-medium hover:underline">
                   Update
                 </button>
               </div>
@@ -1301,7 +1337,7 @@ export default function BillSplitPage() {
               <button
                 onClick={() => saveSplit.mutate()}
                 disabled={saveSplit.isPending}
-                className="w-full bg-[#1d1d1f] text-white py-3 rounded-2xl text-sm font-semibold hover:bg-[#3a3a3c] transition-colors disabled:opacity-50"
+                className="w-full bg-[#1d1d1f] text-white py-3 rounded-2xl text-sm font-semibold hover:bg-[#3a3a3c] transition-colors disabled:opacity-40"
               >
                 {saveSplit.isPending ? 'Saving…' : savedSplitId ? 'Update saved split' : 'Save split'}
               </button>
